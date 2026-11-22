@@ -490,6 +490,24 @@ label {
   padding: 9px 11px;
   font-size: 0.85rem;
 }
+.header-controls .source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.header-controls .source-link:hover {
+  background: #24243e;
+  color: #f7f3ff;
+}
+.source-link svg {
+  width: 1em;
+  height: 1em;
+  flex: none;
+}
 .game-menu {
   position: relative;
 }
@@ -529,6 +547,12 @@ label {
 }
 
 @media (max-width: 620px) {
+  .masthead {
+    flex-wrap: wrap;
+  }
+  .header-controls {
+    justify-content: flex-start;
+  }
   .hero {
     grid-template-columns: 1fr;
   }
