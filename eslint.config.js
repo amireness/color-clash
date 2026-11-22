@@ -34,7 +34,7 @@ function boundaries(layer, allowed) {
 }
 
 export default tseslint.config(
-  { ignores: ["dist", "coverage", "node_modules"] },
+  { ignores: ["dist", "dist-server", "coverage", "node_modules"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...Object.entries(layers).map(([layer, allowed]) =>

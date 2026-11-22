@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
+import type { Server } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { createRoomService } from "../../src/application/rooms";
@@ -11,15 +12,21 @@ import type {
   ServerMessage,
 } from "../../src/infrastructure/room-protocol";
 import { serveRooms } from "../../src/infrastructure/room-server";
+import { createWebServer } from "../../src/infrastructure/web-server";
 
 let server: ReturnType<typeof serveRooms> | undefined;
+let http: Server | undefined;
 afterEach(async () => {
   if (!server) return;
   for (const socket of server.clients) socket.terminate();
   await new Promise<void>((resolve, reject) =>
     server!.close((error) => (error ? reject(error) : resolve())),
   );
+  await new Promise<void>((resolve, reject) =>
+    http!.close((error) => (error ? reject(error) : resolve())),
+  );
   server = undefined;
+  http = undefined;
 });
 
 async function fixture(next = () => 0.999) {
@@ -31,9 +38,11 @@ async function fixture(next = () => 0.999) {
     now: () => 0,
     ttlMs: 60_000,
   });
-  server = serveRooms(service, { host: "127.0.0.1", port: 0 });
-  await once(server, "listening");
-  const address = server.address();
+  http = createWebServer();
+  server = serveRooms(service, http);
+  http.listen(0, "127.0.0.1");
+  await once(http, "listening");
+  const address = http.address();
   if (!address || typeof address === "string")
     throw new Error("Expected a TCP address");
 

@@ -59,7 +59,8 @@ See the [full game rules](docs/GAME_RULES.md) for deck composition, reshuffles, 
 | `npm run typecheck`    | Check TypeScript types                                       |
 | `npm run format:check` | Check Prettier formatting                                    |
 | `npm run format`       | Apply Prettier formatting                                    |
-| `npm run build`        | Type-check and build the frontend into `dist/`               |
+| `npm run build`        | Type-check and build the frontend and production server      |
+| `npm start`            | Serve the production build and WebSockets on one port        |
 | `npm run preview`      | Preview that build locally                                   |
 
 ## Architecture
@@ -68,10 +69,20 @@ Bot and online matches share a pure TypeScript engine and player-specific projec
 
 [Architecture and online rooms](docs/ARCHITECTURE.md) · [Architecture review](docs/ARCHITECTURE_REVIEW.md) · [Design decisions](docs/DECISIONS.md) · [Testing](docs/TESTING.md)
 
-## Hosting and current limitations
+## Deploy to Render
 
-- The browser connects to its own host at `/color-clash-ws`, using `wss:` when the page is served over HTTPS. The production build has no environment variable for a separate WebSocket URL.
-- For public hosting, serve `dist/` over HTTPS and reverse-proxy `/color-clash-ws` to the running room server. The proxy must forward WebSocket upgrades and preserve the public `Host` header for the server's origin check. The Node room server listens on loopback and does not terminate TLS. Keep development dependencies installed on the server runtime if starting it with `npm run server`, which uses `tsx`.
-- Online rooms and statistics live in memory. The room server must stay running. A restart clears every room, and inactive rooms expire after one hour. A bot match resets when the page reloads.
+Create a Render **Web Service** with the **Node** runtime and the repository root as its working directory. Use one instance because rooms are stored in that instance's memory. [Render web services](https://render.com/docs/web-services)
 
-The production hosting path has not been verified behind a public reverse proxy.
+| Render setting        | Value                                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Build Command         | `npm ci --include=dev && npm run build`                                                                                                 |
+| Start Command         | `npm start`                                                                                                                             |
+| Health Check Path     | `/healthz`                                                                                                                              |
+| Environment variables | Render supplies `PORT`. No custom variables or secrets are required. Set `NODE_VERSION=24.x` to select the tested Node major if needed. |
+
+The build emits the browser bundle in `dist/` and the Node entry point in `dist-server/`. In production, Node binds to `0.0.0.0:$PORT` and serves the app, refresh routes, health checks, and WebSocket upgrades at `/color-clash-ws`. Render handles HTTPS, and the browser uses same-origin WSS on the public HTTPS URL. For a local production check, run `npm run build` and `npm start`, then open `http://localhost:8787`. [Render WebSockets](https://render.com/docs/websocket) · [Health checks](https://render.com/docs/health-checks) · [Node version selection](https://render.com/docs/node-version)
+
+### Current limitations
+
+- Online rooms and statistics live in memory. A restart or redeploy clears every room, and inactive rooms expire after one hour. A bot match resets when the page reloads.
+- The production server was verified locally. The public Render HTTPS/WSS connection has yet to be tested.

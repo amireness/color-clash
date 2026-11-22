@@ -1,4 +1,5 @@
 import { WebSocket, WebSocketServer } from "ws";
+import type { Server } from "node:http";
 import type { createRoomService, SeatCredential } from "../application/rooms";
 import type { RoomView } from "../application/online-game";
 import { decodeClientMessage, roomSocketPath } from "./room-protocol";
@@ -6,10 +7,10 @@ import type { ServerMessage } from "./room-protocol";
 
 export function serveRooms(
   rooms: ReturnType<typeof createRoomService>,
-  options: { host: string; port: number },
+  httpServer: Server,
 ) {
   const server = new WebSocketServer({
-    ...options,
+    server: httpServer,
     path: roomSocketPath,
     maxPayload: 4096,
     verifyClient: (({ origin, req }) => {

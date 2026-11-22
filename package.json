@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run typecheck && vite build",
+    "build": "npm run typecheck && vite build && vite build --ssr src/composition/server.ts --outDir dist-server",
+    "start": "node dist-server/server.js --production",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
