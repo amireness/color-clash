@@ -1,5 +1,7 @@
 # Color Clash
 
+**[Play Color Clash Online](https://color-clash-usf9.onrender.com/)**
+
 Color Clash is an original browser card game. Match the active color, number, or action and be the first to empty your hand.
 
 - **Play vs Bots** pits one player against 1–3 bots with adjustable pacing.
