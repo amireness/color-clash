@@ -2,6 +2,8 @@ import { legalActions } from "../domain/engine";
 import type { ActiveGame, Card } from "../domain/model";
 
 export function projectTable(state: ActiveGame) {
+  const { startedAt, endedAt, byPlayer, turns, played, drawn, actions, wilds } =
+    state.statistics;
   return {
     phase: state.phase,
     result:
@@ -21,12 +23,33 @@ export function projectTable(state: ActiveGame) {
     },
     direction: state.direction,
     turnNumber: state.turnNumber,
+    identicalNumbers: state.identicalNumbers,
+    penalty: state.penalty && { ...state.penalty },
     discard: { ...state.discard[0] } as Card,
     color: state.color,
     drawCount: state.drawPile.length,
+    summary:
+      endedAt === undefined
+        ? undefined
+        : {
+            durationMs: endedAt - startedAt,
+            turns,
+            played,
+            drawn,
+            actions,
+            wilds,
+            players: state.players.map(({ id, name, hand }) => ({
+              id,
+              name,
+              remaining: hand.length,
+              played: byPlayer[id]?.played ?? 0,
+              drawn: byPlayer[id]?.drawn ?? 0,
+            })),
+          },
   };
 }
 
+/** Forms the private seat view; other hands and draw-pile identities never cross it. */
 export function projectPlayer(state: ActiveGame, playerId: string) {
   const player = state.players.find(({ id }) => id === playerId);
   if (!player) return undefined;

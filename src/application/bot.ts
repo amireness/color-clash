@@ -1,9 +1,5 @@
-import type { GameCommand } from "../domain/model";
+import type { MatchIntent } from "./match-intent";
 import type { PlayerView } from "./player-view";
-
-type SeatCommand = Extract<GameCommand, { playerId: string }>;
-type WithoutSeat<T> = T extends SeatCommand ? Omit<T, "playerId"> : never;
-export type MatchIntent = WithoutSeat<SeatCommand>;
 
 export function chooseBotMove({
   actions,
@@ -20,8 +16,11 @@ export function chooseBotMove({
     );
     return { type: "choose-color", color };
   }
+  const [group] = actions.groups;
+  if (group) return { type: "play-batch", cardIds: group };
   const [cardId] = actions.playableIds;
   if (cardId) return { type: "play", cardId };
+  if (actions.canAcceptPenalty) return { type: "accept-penalty" };
   if (actions.canDraw) return { type: "draw" };
   if (actions.canAdvance) return { type: "advance" };
 }

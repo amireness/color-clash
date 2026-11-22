@@ -3,3 +3,11 @@ dist/
 coverage/
 *.local
 .npm-cache/
+.env
+.env.*
+.npmrc
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx

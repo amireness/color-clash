@@ -60,6 +60,11 @@ export default tseslint.config(
             "CallExpression[callee.object.name='Math'][callee.property.name='random']",
           message: "Inject randomness at the boundary.",
         },
+        {
+          selector:
+            "CallExpression[callee.object.name='Date'][callee.property.name='now']",
+          message: "Inject the clock at the boundary.",
+        },
       ],
     },
   },

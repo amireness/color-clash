@@ -282,12 +282,6 @@ label {
   accent-color: var(--accent);
   margin-right: 7px;
 }
-.setup-names {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.setup-names input,
 .name-input {
   display: block;
   width: 100%;
@@ -363,14 +357,53 @@ label {
   gap: 9px;
   flex-wrap: wrap;
   overflow-wrap: anywhere;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
 }
 .seats [aria-current] {
-  border-color: var(--accent);
-  color: var(--accent);
+  background: #354719;
+  border-color: #9cba56;
+  color: #f6ffd9;
 }
 .seats span,
 .pile > span,
 .feedback {
+  color: var(--muted);
+}
+.seats [aria-current] span {
+  color: #e1efbd;
+}
+.house-rule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+.house-rule input {
+  accent-color: var(--accent);
+}
+.penalty-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  border: 1px solid #bf8c53;
+  border-radius: 12px;
+  padding: 10px;
+  background: #453022;
+  color: #ffe2bc;
+}
+.hand .card-button[aria-pressed="true"] {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+.group-hint {
+  margin-top: 6px;
+  font-size: 0.85rem;
   color: var(--muted);
 }
 .table {
@@ -470,22 +503,6 @@ label {
   z-index: 3;
   white-space: nowrap;
 }
-.handoff {
-  display: grid;
-  justify-items: center;
-  gap: 8px;
-  text-align: center;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #1c1e36;
-}
-.handoff h2 {
-  overflow-wrap: anywhere;
-}
-.handoff p:not(.eyebrow) {
-  color: var(--muted);
-}
 .confirmation {
   color: inherit;
 }
@@ -510,15 +527,7 @@ label {
   border-radius: 8px;
   overflow-wrap: anywhere;
 }
-.discard {
-  animation: discard-in 150ms ease-out;
-}
-@keyframes discard-in {
-  from {
-    opacity: 0.65;
-    transform: translateY(-5px);
-  }
-}
+
 @media (max-width: 620px) {
   .hero {
     grid-template-columns: 1fr;
@@ -529,9 +538,6 @@ label {
   }
   .art::before {
     width: 230px;
-  }
-  .setup-names {
-    grid-template-columns: 1fr;
   }
   main {
     padding: 24px 0;
@@ -596,4 +602,129 @@ label {
 }
 .hand-area.waiting .card {
   opacity: 0.72;
+}
+
+.friends-entry {
+  margin: 0 0 8px 8px;
+}
+.room-code {
+  display: inline-block;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  margin: 0 0 12px 8px;
+}
+.lobby form {
+  display: grid;
+  gap: 12px;
+}
+.lobby [role="status"] {
+  min-height: 1em;
+}
+
+.bot-speed {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 0.65rem;
+  background: #252640;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.bot-speed select {
+  font: inherit;
+}
+.bot-status,
+.action-feedback {
+  color: var(--accent);
+}
+.bot-status {
+  font-size: 0.8rem;
+  margin-top: 4px;
+}
+.flight-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.card-flight {
+  position: fixed;
+  opacity: 0;
+  animation: card-travel cubic-bezier(0.22, 0.64, 0.24, 1) both;
+}
+.card-flight .card {
+  width: clamp(55px, 9vw, 88px);
+}
+.card-flight .card strong {
+  font-size: clamp(1.6rem, 4.5vw, 2.7rem);
+}
+[data-in-flight] {
+  visibility: hidden;
+}
+@keyframes card-travel {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+  }
+  12% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(
+        calc(-50% + var(--flight-x)),
+        calc(-50% + var(--flight-y))
+      )
+      scale(0.86);
+  }
+}
+.match-summary {
+  text-align: left;
+  margin: 16px 0;
+}
+.match-totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.match-totals div {
+  padding: 6px 8px;
+  background: #292a45;
+  border-radius: 8px;
+}
+.match-totals dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.match-totals dd {
+  margin: 2px 0 0;
+  font-weight: bold;
+}
+.match-summary table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+.match-summary caption {
+  text-align: left;
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+.match-summary th,
+.match-summary td {
+  padding: 6px 5px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+}
+.match-summary th:first-child {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  .flight-layer {
+    display: none;
+  }
 }

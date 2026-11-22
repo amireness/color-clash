@@ -1,65 +1,36 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { FormEvent } from "react";
 import type { LocalGame, Outcome } from "../application/local-game";
-import type { Card, PlayerView, TableView } from "../application/player-view";
+import type { OnlineGame, OnlineState } from "../application/online-game";
+import type { MatchIntent } from "../application/match-intent";
+import { FriendsLobby } from "./FriendsLobby";
+import { PlayerHand } from "./PlayerHand";
+import type { TableView } from "../application/player-view";
 
-const symbols = { red: "◆", yellow: "✦", green: "●", blue: "▲" };
-const actions = {
-  skip: "⊘",
-  reverse: "⇄",
-  "draw-two": "+2",
-  "wild-draw-four": "+4",
-};
-const names = {
-  skip: "Skip",
-  reverse: "Reverse",
-  "draw-two": "Draw Two",
-  wild: "Wild",
-  "wild-draw-four": "Wild Draw Four",
-};
-const title = (word: string) => word[0].toUpperCase() + word.slice(1);
-
-function cardName(card: Card) {
-  const name = card.kind === "number" ? card.value : names[card.kind];
-  return !("color" in card) ? name : `${title(card.color)} ${name}`;
-}
-
-function CardFace({ card }: { card: Card }) {
-  const color = "color" in card ? card.color : "wild";
-  return (
-    <span className={`card face ${color}`} aria-hidden="true">
-      {"color" in card ? (
-        <span className="corner">{symbols[card.color]}</span>
-      ) : (
-        <span className="corner wild-mark" />
-      )}
-      <strong>
-        {card.kind === "number" ? (
-          card.value
-        ) : card.kind === "wild" ? (
-          <span className="wild-mark wild-emblem" />
-        ) : (
-          actions[card.kind]
-        )}
-      </strong>
-    </span>
-  );
-}
-
-function CardBack() {
-  return (
-    <span className="card back" aria-hidden="true">
-      <strong>✦</strong>
-    </span>
-  );
-}
+import { CardBack, CardFace, cardName, symbols, title } from "./Cards";
+import { useMatchPlayback } from "./match-playback";
+import type { MatchFrame } from "./match-playback";
+import { CardFlight } from "./CardFlight";
+import { MatchSummary } from "./MatchSummary";
+import { botSpeeds, useBotPacing } from "./bot-pacing";
+import type { BotSpeed } from "./bot-pacing";
+import type { PublicEvent } from "../application/public-events";
 
 function ConfirmMatchAction({
   action,
+  online,
   onCancel,
   onConfirm,
 }: {
   action: "leave" | "score";
+  online: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -87,7 +58,9 @@ function ConfirmMatchAction({
       </h2>
       <p id="confirmation-message">
         {leaving
-          ? "Your current match will end, and your progress won't be saved."
+          ? online
+            ? "You will leave the room and this browser will forget your seat."
+            : "Your current match will end, and your progress won't be saved."
           : "Color Clash house rule: The fewest cards wins. Players with the same lowest count tie."}
       </p>
       <div className="button-row">
@@ -108,19 +81,24 @@ const errors = {
   "wrong-phase": "That action is unavailable at this stage.",
   "wrong-player": "It’s another player’s turn.",
   "illegal-card": "That card can’t be played right now.",
+  "illegal-batch": "Choose matching number cards of the same color and value.",
   "illegal-action": "That action is unavailable this turn.",
   "invalid-color": "Choose one of the four colors.",
 };
 
-function describe(outcome: Extract<Outcome, { ok: true }>, table: TableView) {
+function describe(events: readonly PublicEvent[], table: TableView) {
   const name = (id: string) =>
     table.players.find((player) => player.id === id)?.name ?? id;
-  return outcome.events
+  return events
     .flatMap((event) => {
       switch (event.type) {
         case "played":
           return [`${name(event.playerId)} played ${cardName(event.card)}.`];
         case "drew":
+          if (event.penalty !== undefined)
+            return [
+              `${name(event.playerId)} accepted +${event.penalty} and drew ${event.count}.`,
+            ];
           return [
             event.count
               ? `${name(event.playerId)} drew ${event.count}.`
@@ -128,6 +106,10 @@ function describe(outcome: Extract<Outcome, { ok: true }>, table: TableView) {
           ];
         case "reversed":
           return ["Direction reversed."];
+        case "stacked":
+          return [
+            `${name(event.playerId)} stacked the penalty to +${event.count}.`,
+          ];
         case "skipped":
           return [`${name(event.playerId)} was skipped.`];
         default:
@@ -151,19 +133,91 @@ function resultTitle(
     : `Tie: ${winners.join(", ")}`;
 }
 
-export function App({ game }: { game: LocalGame }) {
-  const [screen, setScreen] = useState<"home" | "setup" | "game">("home");
+const idle: OnlineState = { status: "idle" };
+const getIdle = () => idle;
+const subscribeIdle = () => () => {};
+
+export function App({
+  game,
+  online,
+}: {
+  game: LocalGame;
+  online?: OnlineGame;
+}) {
+  const [screen, setScreen] = useState<"home" | "setup" | "game" | "online">(
+    () =>
+      online && new URLSearchParams(window.location.search).has("room")
+        ? "online"
+        : "home",
+  );
+  const onlineState = useSyncExternalStore(
+    online?.subscribe ?? subscribeIdle,
+    online?.getState ?? getIdle,
+  );
+  const remote = screen === "online";
+  useEffect(() => {
+    online?.restore();
+  }, [online]);
+  useEffect(() => {
+    if (onlineState.room || onlineState.status === "reconnecting")
+      setScreen("online");
+  }, [onlineState.room, onlineState.status]);
   const [count, setCount] = useState(1);
+  const [identicalNumbers, setIdenticalNumbers] = useState(false);
   const [playerName, setPlayerName] = useState("Player 1");
-  const [table, setTable] = useState<TableView>();
-  const [view, setView] = useState<PlayerView>();
-  const [message, setMessage] = useState("");
+  const [localFrame, setFrame] = useState<MatchFrame>();
+  const [speed, setSpeed] = useState<BotSpeed>("Normal");
+  const [localMessage, setMessage] = useState("");
+  const room = remote ? onlineState.room : undefined;
+  const onlineFrame = useMemo(
+    () =>
+      room?.match
+        ? { view: room.match, events: room.events, revision: room.revision }
+        : undefined,
+    [room],
+  );
+  const frame = remote ? onlineFrame : localFrame;
+  const playback = useMatchPlayback(
+    frame,
+    room?.code ?? "local",
+    !remote || onlineState.status === "connected",
+  );
+  const view = playback.frame?.view;
+  const table = view;
+  const discard = playback.landed ?? table?.discard;
+  const actionMessage =
+    table && playback.step ? describe([playback.step], table) : "";
+  const message =
+    (remote
+      ? ((onlineState.error &&
+          (Object.hasOwn(errors, onlineState.error)
+            ? errors[onlineState.error as keyof typeof errors]
+            : onlineState.error)) ??
+        (onlineState.status === "reconnecting"
+          ? "Reconnecting to your seat…"
+          : ""))
+      : localMessage) ||
+    actionMessage ||
+    (table && !playback.step
+      ? describe(playback.frame?.events ?? [], table)
+      : "");
+  const animating = Boolean(playback.step);
+  const blocked =
+    animating ||
+    (remote && (onlineState.status !== "connected" || onlineState.pending));
+  const matchScreen = screen === "game" || (remote && Boolean(table));
   const [rules, setRules] = useState(false);
   const [confirmation, setConfirmation] = useState<"leave" | "score">();
   const dialogTrigger = useRef<HTMLElement>(null);
   const focusTarget = useRef<HTMLHeadingElement>(null);
-  const botTurn =
+  const otherTurn =
     table?.phase === "playing" && view?.viewerId !== table.current.id;
+  const botTurn = !remote && otherTurn;
+  const botActing =
+    !remote &&
+    localFrame?.view.viewerId !== localFrame?.view.current.id &&
+    localFrame?.view.phase === "playing";
+  const boardRef = useRef<HTMLElement>(null);
   const choosingWild = Boolean(view?.actions.wildColors.length);
 
   useLayoutEffect(() => {
@@ -172,8 +226,7 @@ export function App({ game }: { game: LocalGame }) {
 
   function navigate(next: "home" | "setup") {
     setMessage("");
-    setTable(undefined);
-    setView(undefined);
+    setFrame(undefined);
     setScreen(next);
   }
 
@@ -192,11 +245,13 @@ export function App({ game }: { game: LocalGame }) {
     dialogTrigger.current = null;
     setConfirmation(undefined);
     if (confirmation === "leave") {
-      game.leaveGame();
+      if (remote) online?.leave();
+      else game.leaveGame();
       setRules(false);
       navigate("home");
     } else {
-      update(game.endAndScore());
+      if (remote) online?.send({ type: "end-and-score" });
+      else update(game.endAndScore());
     }
   }
 
@@ -205,24 +260,31 @@ export function App({ game }: { game: LocalGame }) {
       setMessage(errors[outcome.error]);
       return;
     }
-    const next = game.getTableView();
+    const next = game.getHumanView();
     if (!next) return;
-    setTable(next);
-    setView(game.getHumanView());
-    setMessage(describe(outcome, next));
+    setFrame({ view: next, events: outcome.events });
+    setMessage("");
     setScreen("game");
+  }
+
+  function move(intent: MatchIntent) {
+    if (blocked || confirmation) return;
+    if (remote) online?.send(intent);
+    else update(game.humanMove(intent));
   }
 
   function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    update(game.startBotMatch(playerName, count));
+    update(game.startBotMatch(playerName, count, identicalNumbers));
   }
 
-  useEffect(() => {
-    if (!botTurn || confirmation) return;
-    const timer = setTimeout(() => update(game.botStep()), 400);
-    return () => clearTimeout(timer);
-  }, [botTurn, view, confirmation, game]);
+  useBotPacing(
+    botActing ? localFrame?.view.turnNumber : undefined,
+    localFrame,
+    animating || Boolean(confirmation),
+    speed,
+    () => update(game.botStep()),
+  );
 
   return (
     <div className="shell">
@@ -238,7 +300,7 @@ export function App({ game }: { game: LocalGame }) {
           >
             {rules ? "Close rules" : "How to Play"}
           </button>
-          {screen === "game" && table?.phase === "playing" && (
+          {matchScreen && table?.phase === "playing" && (
             <>
               <button
                 className="quiet"
@@ -252,8 +314,24 @@ export function App({ game }: { game: LocalGame }) {
               <details className="game-menu">
                 <summary className="quiet">Game menu</summary>
                 <div>
+                  {!remote && (
+                    <label className="bot-speed">
+                      Bot speed
+                      <select
+                        value={speed}
+                        onChange={(event) =>
+                          setSpeed(event.target.value as BotSpeed)
+                        }
+                      >
+                        {Object.keys(botSpeeds).map((value) => (
+                          <option key={value}>{value}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <button
                     className="quiet"
+                    disabled={blocked}
                     onClick={(event) => {
                       const menu = event.currentTarget.closest("details");
                       dialogTrigger.current =
@@ -273,6 +351,7 @@ export function App({ game }: { game: LocalGame }) {
       {confirmation && (
         <ConfirmMatchAction
           action={confirmation}
+          online={remote}
           onCancel={cancelConfirmation}
           onConfirm={confirm}
         />
@@ -286,20 +365,18 @@ export function App({ game }: { game: LocalGame }) {
           <p>
             Skip passes over one player. Reverse flips direction and skips in a
             two-player match. Draw Two makes the next player draw two and miss
-            their turn.
+            their turn unless they stack another Draw Two.
           </p>
           <p>
             You can draw instead of playing. Play the drawn card if it matches
             or end your turn. Wild Draw Four sets a color and makes the next
-            player draw up to four cards and miss their turn.
+            player accept the penalty or stack another Wild Draw Four.
           </p>
         </aside>
       )}
       <main
         className={
-          screen === "game" && table?.phase === "playing"
-            ? "game-main"
-            : undefined
+          matchScreen && table?.phase === "playing" ? "game-main" : undefined
         }
       >
         {screen === "home" && (
@@ -317,6 +394,14 @@ export function App({ game }: { game: LocalGame }) {
               <button className="primary" onClick={() => navigate("setup")}>
                 Play vs Bots <span aria-hidden="true">→</span>
               </button>
+              {online && (
+                <button
+                  className="quiet friends-entry"
+                  onClick={() => setScreen("online")}
+                >
+                  Play with Friends
+                </button>
+              )}
             </div>
             <div className="art" aria-hidden="true">
               <CardFace
@@ -340,6 +425,16 @@ export function App({ game }: { game: LocalGame }) {
               />
             </div>
           </section>
+        )}
+        {remote && online && !table && (
+          <FriendsLobby
+            game={online}
+            state={onlineState}
+            onBack={() => {
+              online.leave();
+              navigate("home");
+            }}
+          />
         )}
         {screen === "setup" && (
           <section className="panel setup">
@@ -376,6 +471,16 @@ export function App({ game }: { game: LocalGame }) {
                   onChange={(event) => setPlayerName(event.target.value)}
                 />
               </label>
+              <label className="house-rule">
+                <input
+                  type="checkbox"
+                  checked={identicalNumbers}
+                  onChange={(event) =>
+                    setIdenticalNumbers(event.target.checked)
+                  }
+                />{" "}
+                Allow identical number cards to be played together
+              </label>
               <p role="status">{message}</p>
               <button className="primary" type="submit">
                 Deal cards <span aria-hidden="true">→</span>
@@ -383,7 +488,7 @@ export function App({ game }: { game: LocalGame }) {
             </form>
           </section>
         )}
-        {screen === "game" &&
+        {matchScreen &&
           table &&
           (table.result ? (
             <section className="panel interlude">
@@ -398,39 +503,58 @@ export function App({ game }: { game: LocalGame }) {
               <h1 ref={focusTarget} tabIndex={-1}>
                 {resultTitle(table, table.result)}
               </h1>
-              {table.result.reason === "early-score" && (
-                <ul className="scores" aria-label="Remaining cards">
-                  {table.players.map(({ id, name, count }) => (
-                    <li key={id}>
-                      <strong>{name}</strong>
-                      <span>
-                        {count} {count === 1 ? "card" : "cards"}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {table.summary && <MatchSummary summary={table.summary} />}
               <p role="status">{message}</p>
               <div className="button-row">
                 <button
                   className="primary"
-                  onClick={() => update(game.restartGame())}
+                  disabled={
+                    blocked ||
+                    (remote &&
+                      (room?.viewerId !== room?.hostId ||
+                        room?.seats.some((seat) => !seat.connected)))
+                  }
+                  onClick={() => {
+                    if (remote) online?.send({ type: "restart" });
+                    else update(game.restartGame());
+                  }}
                 >
                   Play again
                 </button>
-                <button className="quiet" onClick={() => navigate("setup")}>
-                  Change players
+                <button
+                  className="quiet"
+                  onClick={() => {
+                    if (remote) {
+                      online?.leave();
+                      navigate("home");
+                    } else navigate("setup");
+                  }}
+                >
+                  {remote ? "Leave room" : "Change players"}
                 </button>
               </div>
             </section>
           ) : (
-            <section className="board">
+            <section className="board" ref={boardRef}>
+              {playback.step && (
+                <CardFlight
+                  key={playback.key}
+                  event={playback.step}
+                  board={boardRef}
+                  viewerId={view.viewerId}
+                />
+              )}
               <div className="board-heading">
                 <div>
                   <p className="eyebrow">TURN {table.turnNumber}</p>
                   <h1 ref={view ? focusTarget : undefined} tabIndex={-1}>
                     {table.current.name}’s turn
                   </h1>
+                  {botTurn && (
+                    <p className="bot-status" role="status">
+                      {animating ? "Playing…" : "Deciding…"}
+                    </p>
+                  )}
                 </div>
                 <p className="direction">
                   <span aria-hidden="true">
@@ -443,6 +567,7 @@ export function App({ game }: { game: LocalGame }) {
                 {table.players.map((player) => (
                   <li
                     key={player.id}
+                    data-seat={player.id}
                     aria-current={
                       player.id === table.current.id ? "true" : undefined
                     }
@@ -454,6 +579,10 @@ export function App({ game }: { game: LocalGame }) {
                       />
                       {player.name}
                       {player.id === view?.viewerId ? " (you)" : ""}
+                      {room?.seats.find((seat) => seat.id === player.id)
+                        ?.connected === false
+                        ? " · Offline"
+                        : ""}
                     </strong>
                     <span>
                       {player.count} {player.count === 1 ? "card" : "cards"}
@@ -466,8 +595,9 @@ export function App({ game }: { game: LocalGame }) {
                   <button
                     className="card-button"
                     aria-label="Draw a card"
-                    disabled={!view?.actions.canDraw}
-                    onClick={() => update(game.humanMove({ type: "draw" }))}
+                    data-draw-pile
+                    disabled={blocked || !view?.actions.canDraw}
+                    onClick={() => move({ type: "draw" })}
                   >
                     <CardBack />
                   </button>
@@ -478,23 +608,56 @@ export function App({ game }: { game: LocalGame }) {
                 </div>
                 <div className="pile">
                   <div
-                    key={table.discard.id}
                     className="discard"
+                    data-discard
                     role="img"
-                    aria-label={`Discard: ${cardName(table.discard)}`}
+                    aria-label={
+                      discard ? `Discard: ${cardName(discard)}` : undefined
+                    }
                   >
-                    <CardFace card={table.discard} />
+                    {discard && <CardFace card={discard} />}
                   </div>
                   <span className={`active-color ${table.color}`}>
                     {symbols[table.color]} {title(table.color)}
                   </span>
                 </div>
               </div>
-              <p className="feedback" role="status">
+              {table.penalty && (
+                <div
+                  className="penalty-banner"
+                  role="region"
+                  aria-label="Draw penalty"
+                >
+                  <strong>
+                    {view.actions.canAcceptPenalty
+                      ? `Draw ${table.penalty.count} cards${view.actions.playableIds.length ? ` or stack ${table.penalty.kind === "draw-two" ? "+2" : "+4"}` : ""}.`
+                      : choosingWild
+                        ? "Choose a color to finish stacking."
+                        : `${table.current.name} faces a +${table.penalty.count} penalty.`}
+                  </strong>
+                  {view.actions.canAcceptPenalty && (
+                    <button
+                      className="primary"
+                      disabled={blocked}
+                      onClick={() => move({ type: "accept-penalty" })}
+                    >
+                      Draw {table.penalty.count} cards
+                    </button>
+                  )}
+                </div>
+              )}
+              <p
+                className={
+                  playback.step ? "feedback action-feedback" : "feedback"
+                }
+                role="status"
+              >
                 {message ||
                   (botTurn
                     ? `${table.current.name} is thinking…`
-                    : "Choose a matching card or draw one.")}
+                    : otherTurn
+                      ? "Waiting for the next move…"
+                      : "Choose a matching card or draw one.")}
               </p>
               {view ? (
                 <>
@@ -506,10 +669,9 @@ export function App({ game }: { game: LocalGame }) {
                           <button
                             key={color}
                             className={`swatch ${color}`}
+                            disabled={blocked}
                             onClick={() =>
-                              update(
-                                game.humanMove({ type: "choose-color", color }),
-                              )
+                              move({ type: "choose-color", color })
                             }
                           >
                             {symbols[color]} {title(color)}
@@ -518,48 +680,21 @@ export function App({ game }: { game: LocalGame }) {
                       </div>
                     </fieldset>
                   )}
-                  <section
-                    className={botTurn ? "hand-area waiting" : "hand-area"}
-                    aria-label="Your hand"
-                  >
-                    <div className="hand-heading">
-                      <h2>Your hand</h2>
-                      {view.actions.canAdvance && (
-                        <button
-                          className="quiet"
-                          onClick={() =>
-                            update(game.humanMove({ type: "advance" }))
-                          }
-                        >
-                          End turn →
-                        </button>
-                      )}
-                    </div>
-                    <div className="hand">
-                      {view.hand.map((card) => (
-                        <button
-                          key={card.id}
-                          className="card-button"
-                          aria-label={`Play ${cardName(card)}`}
-                          disabled={!view.actions.playableIds.includes(card.id)}
-                          onClick={() =>
-                            update(
-                              game.humanMove({ type: "play", cardId: card.id }),
-                            )
-                          }
-                        >
-                          <CardFace card={card} />
-                        </button>
-                      ))}
-                    </div>
-                  </section>
+                  <PlayerHand
+                    view={view}
+                    blocked={Boolean(blocked)}
+                    waiting={Boolean(otherTurn || blocked)}
+                    step={playback.step}
+                    landedId={playback.landed?.id}
+                    move={move}
+                  />
                 </>
               ) : null}
             </section>
           ))}
       </main>
       <footer>
-        COLOR CLASH <span>◆ ✦ ● ▲</span> LOCAL PLAY
+        COLOR CLASH <span>◆ ✦ ● ▲</span> {remote ? "ONLINE PLAY" : "LOCAL PLAY"}
       </footer>
     </div>
   );

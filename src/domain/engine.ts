@@ -1,4 +1,5 @@
 import { createDeck, shuffle } from "./deck";
+import { recordStatistics, startStatistics } from "./match-statistics";
 import { colors } from "./model";
 import type {
   ActiveGame,
@@ -11,6 +12,8 @@ import type {
 } from "./model";
 
 export interface EngineDependencies {
+  /** Timestamp sampled by the caller for a committed command. */
+  at: number;
   /** Supplies a value in [0, 1) only when shuffling is required. */
   random: () => number;
 }
@@ -21,7 +24,10 @@ const success = (state: GameState, ...events: GameEvent[]): GameResult => ({
   events,
 });
 
-export function createGame(names: readonly string[]): GameResult {
+export function createGame(
+  names: readonly string[],
+  identicalNumbers = false,
+): GameResult {
   const cleaned = names.map((name) => name.trim());
   if (
     cleaned.length < 2 ||
@@ -33,6 +39,7 @@ export function createGame(names: readonly string[]): GameResult {
   }
   return success({
     phase: "setup",
+    identicalNumbers,
     players: cleaned.map((name, index) => ({
       id: `p${index + 1}`,
       name,
@@ -41,7 +48,10 @@ export function createGame(names: readonly string[]): GameResult {
   });
 }
 
-function start(state: GameState, random: () => number): GameResult {
+function start(
+  state: GameState,
+  { random, at }: EngineDependencies,
+): GameResult {
   const deck = shuffle(createDeck(), random);
   const players = state.players.map((player) => ({
     ...player,
@@ -56,6 +66,7 @@ function start(state: GameState, random: () => number): GameResult {
   return success(
     {
       phase: "playing",
+      identicalNumbers: state.identicalNumbers,
       players,
       drawPile: deck,
       discard: [opening],
@@ -64,6 +75,7 @@ function start(state: GameState, random: () => number): GameResult {
       current: 0,
       turn: { kind: "ready" },
       turnNumber: 1,
+      statistics: startStatistics(at),
     },
     { type: "started" },
   );
@@ -83,18 +95,30 @@ export function legalActions(state: ActiveGame, playerId: string) {
   const player = state.players[state.current];
   const active = state.phase === "playing" && player.id === playerId;
   const turn = state.turn;
+  const playable =
+    active && turn.kind !== "wild"
+      ? player.hand.filter((card) =>
+          state.penalty
+            ? card.kind === state.penalty.kind
+            : (turn.kind === "ready" || card.id === turn.cardId) &&
+              matches(card, state.discard[0], state.color),
+        )
+      : [];
+  const groups = new Map<string, string[]>();
+  if (state.identicalNumbers && turn.kind === "ready" && !state.penalty) {
+    for (const card of playable) {
+      if (card.kind !== "number") continue;
+      const key = card.color + card.value;
+      const ids = groups.get(key) ?? [];
+      ids.push(card.id);
+      groups.set(key, ids);
+    }
+  }
   return {
-    playableIds:
-      active && turn.kind !== "wild"
-        ? player.hand
-            .filter(
-              (card) =>
-                (turn.kind === "ready" || card.id === turn.cardId) &&
-                matches(card, state.discard[0], state.color),
-            )
-            .map((card) => card.id)
-        : [],
-    canDraw: active && turn.kind === "ready",
+    playableIds: playable.map(({ id }) => id),
+    groups: [...groups.values()].filter((ids) => ids.length > 1),
+    canDraw: active && turn.kind === "ready" && !state.penalty,
+    canAcceptPenalty: active && turn.kind === "ready" && Boolean(state.penalty),
     canAdvance: active && turn.kind === "drawn",
     wildColors: active && turn.kind === "wild" ? [...colors] : [],
   };
@@ -156,45 +180,51 @@ function advance(
   );
 }
 
-function commitCard(
+function commitPlay(
   state: ActiveGame,
-  card: Card,
+  cards: readonly [Card, ...Card[]],
   color: Color,
   random: () => number,
 ): GameResult {
   const player = state.players[state.current];
-  const hand = player.hand.filter((held) => held.id !== card.id);
+  const [card, ...older] = [...cards].reverse();
+  const ids = new Set(cards.map(({ id }) => id));
+  const hand = player.hand.filter((held) => !ids.has(held.id));
   let next: ActiveGame = {
     ...state,
-    discard: [card, ...state.discard],
+    discard: [card, ...older, ...state.discard],
     color,
     turn: { kind: "ready" },
     players: state.players.map((entry) =>
       entry.id === player.id ? { ...entry, hand } : entry,
     ),
   };
-  const events: GameEvent[] = [
-    { type: "played", playerId: player.id, card: { ...card } },
-  ];
+  const events: GameEvent[] = cards.map((played) => ({
+    type: "played",
+    playerId: player.id,
+    card: { ...played },
+  }));
   if (card.kind === "reverse") {
     next = { ...next, direction: next.direction === 1 ? -1 : 1 };
     events.push({ type: "reversed" });
   }
-  const penaltyCount =
-    card.kind === "wild-draw-four" ? 4 : card.kind === "draw-two" ? 2 : 0;
   const skips =
     card.kind === "skip" ||
-    penaltyCount > 0 ||
     (card.kind === "reverse" && next.players.length === 2);
   const target = nextSeat(next, 1);
-  if (penaltyCount) {
-    const penalty = takeCards(next, target, penaltyCount, random);
-    next = penalty.state;
-    events.push({
-      type: "drew",
-      playerId: next.players[target].id,
-      count: penalty.drawn.length,
-    });
+  if (card.kind === "draw-two" || card.kind === "wild-draw-four") {
+    const count =
+      (state.penalty?.count ?? 0) + (card.kind === "draw-two" ? 2 : 4);
+    if (state.penalty)
+      events.push({ type: "stacked", playerId: player.id, count });
+    if (hand.length)
+      return advance(
+        { ...next, penalty: { kind: card.kind, count } },
+        1,
+        events,
+      );
+    // The empty hand ends the chain. Settle its full amount before recording the win.
+    next = settlePenalty(next, target, count, random, events);
   }
   if (skips)
     events.push({ type: "skipped", playerId: next.players[target].id });
@@ -214,10 +244,51 @@ function commitCard(
   return advance(next, skips ? 2 : 1, events);
 }
 
+function settlePenalty(
+  state: ActiveGame,
+  target: number,
+  count: number,
+  random: () => number,
+  events: GameEvent[],
+) {
+  const { state: next, drawn } = takeCards(state, target, count, random);
+  const playerId = state.players[target].id;
+  events.push(
+    { type: "drew", playerId, count: drawn.length, penalty: count },
+    { type: "skipped", playerId },
+  );
+  return { ...next, penalty: undefined };
+}
+
 export function executeCommand(
   state: GameState,
   command: GameCommand,
-  { random }: EngineDependencies,
+  dependencies: EngineDependencies,
+): GameResult {
+  const result = transition(state, command, dependencies);
+  if (
+    !result.ok ||
+    result.state.phase === "setup" ||
+    result.events.some(({ type }) => type === "started")
+  )
+    return result;
+  return {
+    ...result,
+    state: {
+      ...result.state,
+      statistics: recordStatistics(
+        result.state.statistics,
+        result.events,
+        dependencies.at,
+      ),
+    },
+  };
+}
+
+function transition(
+  state: GameState,
+  command: GameCommand,
+  { random, at }: EngineDependencies,
 ): GameResult {
   if (!("playerId" in command)) {
     if (command.type === "end-and-score" && state.phase === "playing") {
@@ -230,6 +301,7 @@ export function executeCommand(
           ...state,
           phase: "finished",
           turn: { kind: "ready" },
+          penalty: undefined,
           result: { reason: "early-score", winnerIds },
         },
         { type: "scored", winnerIds: [...winnerIds] },
@@ -239,7 +311,7 @@ export function executeCommand(
       (command.type === "start" && state.phase === "setup") ||
       (command.type === "restart" && state.phase === "finished")
     )
-      return start(state, random);
+      return start(state, { random, at });
     return { ok: false, error: "wrong-phase" };
   }
   if (state.phase !== "playing") return { ok: false, error: "wrong-phase" };
@@ -254,7 +326,23 @@ export function executeCommand(
         return { ok: false, error: "illegal-card" };
       if (!("color" in card))
         return success({ ...state, turn: { kind: "wild", cardId: card.id } });
-      return commitCard(state, card, card.color, random);
+      return commitPlay(state, [card], card.color, random);
+    }
+    case "play-batch": {
+      const ids = new Set(command.cardIds);
+      if (
+        ids.size !== command.cardIds.length ||
+        ids.size < 2 ||
+        !actions.groups.some((group) =>
+          command.cardIds.every((id) => group.includes(id)),
+        )
+      )
+        return { ok: false, error: "illegal-batch" };
+      const [first, ...rest] = command.cardIds.map((id) =>
+        player.hand.find((card) => card.id === id)!,
+      );
+      if (first.kind !== "number") return { ok: false, error: "illegal-batch" };
+      return commitPlay(state, [first, ...rest], first.color, random);
     }
     case "choose-color": {
       if (state.turn.kind !== "wild")
@@ -264,7 +352,20 @@ export function executeCommand(
       const { cardId } = state.turn;
       const card = player.hand.find((held) => held.id === cardId);
       if (!card) return { ok: false, error: "illegal-card" };
-      return commitCard(state, card, command.color, random);
+      return commitPlay(state, [card], command.color, random);
+    }
+    case "accept-penalty": {
+      if (!actions.canAcceptPenalty || !state.penalty)
+        return { ok: false, error: "illegal-action" };
+      const events: GameEvent[] = [];
+      const next = settlePenalty(
+        state,
+        state.current,
+        state.penalty.count,
+        random,
+        events,
+      );
+      return advance(next, 1, events);
     }
     case "draw": {
       if (!actions.canDraw) return { ok: false, error: "illegal-action" };

@@ -12,13 +12,13 @@ flowchart TD
   App --> Domain
 ```
 
-| Layer          | Responsibilities                                                  | Allowed project dependencies             |
-| -------------- | ----------------------------------------------------------------- | ---------------------------------------- |
-| Domain         | Deck, matching, commands, turn state, events and errors           | Domain                                   |
-| Application    | Run use cases, commit accepted transitions, return projections    | Application, domain                      |
-| Infrastructure | Implement repository and randomness contracts                     | Infrastructure, application, domain      |
-| Presentation   | Render projections, collect intentions, cover hands between turns | Presentation, application                |
-| Composition    | Construct the service with concrete adapters                      | Composition, application, infrastructure |
+| Layer          | Responsibilities                                               | Allowed project dependencies             |
+| -------------- | -------------------------------------------------------------- | ---------------------------------------- |
+| Domain         | Deck, matching, commands, turn state, events and errors        | Domain                                   |
+| Application    | Run use cases, commit accepted transitions, return projections | Application, domain                      |
+| Infrastructure | Implement storage, randomness, and networking contracts        | Infrastructure, application, domain      |
+| Presentation   | Render projections and collect intentions                      | Presentation, application                |
+| Composition    | Construct the service with concrete adapters                   | Composition, application, infrastructure |
 
 Other cross-layer imports are forbidden. ESLint enforces the matrix, bars package imports in domain and application, and disallows common browser globals and direct `Math.random()` calls in those layers. The engine can execute in a plain TypeScript runtime.
 
@@ -28,8 +28,24 @@ React receives use cases, detached projections, and public events. The local app
 
 The UI consumes the same action availability the engine validates, and only supplies display labels and rule explanations. The domain, projection and adapter contracts share card and snapshot types. React uses application types for card display and action feedback, so a new card type can require corresponding presentation work. The lint check covers import direction. Tests and review verify behavioral responsibilities such as rule ownership and keeping authoritative snapshots out of UI state.
 
-## Online extension
+The engine supplies legal number groups and penalty actions in the player projection. The board owns only the selection and sends one batch intent. The WebSocket decoder checks intent shape, then the same engine validates the entire batch or penalty decision at the room's current revision. The pending penalty kind and count are public match state. Stack availability and grouped card IDs are seat-specific.
 
-Early scoring is a domain command with an explicit result reason and winning seats. The table projection exposes that result and public hand counts. Leaving a local match clears the repository through its application port and produces no match result.
+```mermaid
+flowchart LR
+  UI["React"] --> Port["OnlineGame application interface"]
+  Client["Browser transport"] -. implements .-> Port
+  Client <-->|WebSocket| Adapter["Server transport"]
+  Adapter --> Rooms["Application room service"]
+  Rooms --> Engine["Domain engine and player projection"]
+  Rooms --> Store["Room store port"]
+```
 
-Run the same engine and player projection on a server. A WebSocket adapter should decode and validate incoming data and map verified seat credentials to the command actor. A room service should serialize commands or atomically commit against a room revision, then distribute separate projections to each seat. A room code locates a room and a separate seat credential enables reconnecting to the same hand. The server can restore the current projection on reconnect, expire idle rooms, and let optional bots choose from legal actions and submit ordinary commands. Room lifecycle, authorization, transport and storage belong outside the engine. The local application uses a single-match repository for bot play.
+## Online rooms
+
+The browser composition root supplies a WebSocket adapter through the OnlineGame interface. React sees typed room views, connection status, and player intentions. The transport owns wire serialization, reconnect scheduling, and tab-scoped credential storage. The server composition root supplies the room service with in-memory storage, cryptographic code and token generators, a clock, and random draws.
+
+Each six-character code locates a room. A separate 256-bit bearer credential identifies a seat and is sent only on that seat’s socket. The server binds credentials to sockets, replaces older connections on resume, and derives actor IDs from the binding. The protocol decoder keeps only recognized action fields. Each accepted action checks the latest room revision and updates the room synchronously before any broadcast. Stale requests return a fresh projection and a retry message. Each socket receives a separately projected view; public events contain played cards and draw counts only.
+
+The host starts after two to four connected seats are ready. Disconnected seats stay reserved. An explicit lobby departure frees the seat and transfers host duties if necessary. An explicit departure during a match revokes the credential and marks the seat offline. Any seated player can confirm the early scoring house rule. Rooms expire after an hour without room activity. A single process owns all rooms and its restart clears them. Multiple server processes would require coordinated room ownership or transactional storage.
+
+Bot mode uses the same engine, projections, and match intents with a single in-memory match. The UI fixes the human to one seat and paces bots using a cancellable timer. Bot strategy receives the acting seat’s projection. Browser memory contains the local authoritative match, while online authority and hidden information remain on the server.
